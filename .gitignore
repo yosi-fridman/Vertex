@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+!.env.example
+
+# Never commit a service-account key
+*.json.key
+service-account*.json
+*-key.json
+key.json
+credentials.json
+
+secrets/*
+!secrets/.gitkeep

@@ -1,0 +1,25 @@
+{
+  "name": "vertex-key-check",
+  "version": "1.0.0",
+  "description": "CLI to validate a Google Cloud AI Platform (Vertex AI) key against me-west1 with fallback to other regions",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "vertex-key-check": "src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "check": "node src/index.js",
+    "check:verbose": "node src/index.js --verbose",
+    "check:generate": "node src/index.js --generate",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5"
+  },
+  "license": "MIT",
+  "private": true
+}
