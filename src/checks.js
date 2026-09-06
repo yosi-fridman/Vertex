@@ -7,11 +7,20 @@ import { authHeaders } from './auth.js';
  *   1. location         GET  /v1/projects/{p}/locations/{region}
  *   2. publisherModels  GET  /v1beta1/publishers/google/models
  *   3. customModels     GET  /v1/projects/{p}/locations/{region}/models
- *   4. generateContent  POST .../publishers/google/models/{model}:generateContent   (--generate)
+ *   4. generateContent  POST .../publishers/google/models/{model}:generateContent
  *
- * A region is OK when the mandatory probes pass, PARTIAL when the endpoint
- * answers but something is off (missing IAM role, API not enabled), and FAIL
- * when the key or the region simply does not work.
+ * Note that probe 2 is NOT project-scoped - there is no project in its path -
+ * so it passing proves the token is accepted, and nothing about the project.
+ * Only probes 1, 3 and 4 exercise IAM on the project itself, and they need
+ * three *different* permissions: locations.get, models.list and
+ * endpoints.predict. A key can be denied the first two and still be perfectly
+ * able to run inference, which is why probe 4 runs automatically whenever the
+ * reads come back 403 - otherwise the verdict would be inconclusive exactly
+ * where it matters.
+ *
+ * A region is OK when inference works (or every probe passed), PARTIAL when
+ * the endpoint answers and the credential is valid but the project is not
+ * usable, and FAIL when the key or the region does not work at all.
  */
 
 export async function checkRegion(http, { region, projectId, auth, model, generate }) {
@@ -76,10 +85,15 @@ export async function checkRegion(http, { region, projectId, auth, model, genera
   await run('publisherModels', () => http.get(urls.publisherModels(region), withAuth));
 
   // 3. Project-scoped read: proves the key has IAM on the project, not just a valid signature.
-  await run('customModels', () => http.get(urls.customModels(region, projectId), withAuth));
+  const customModels = await run('customModels', () =>
+    http.get(urls.customModels(region, projectId), withAuth),
+  );
 
-  // 4. Optional: a real inference round-trip.
-  if (generate) {
+  // 4. A real inference round-trip. Asked for with --generate, and run anyway
+  //    when the reads were denied: endpoints.predict is a separate permission,
+  //    and it is the one that decides whether the key is actually usable.
+  const readsDenied = [location, customModels].some((p) => p.status === 403);
+  if (generate || readsDenied) {
     await run('generateContent', () =>
       http.post(
         urls.generateContent(region, projectId, model),
@@ -95,35 +109,79 @@ export async function checkRegion(http, { region, projectId, auth, model, genera
   return finish({ region, host, probes, started, ...classify(probes) });
 }
 
-function finish({ region, host, probes, started, status, detail }) {
-  return { region, host, probes, status, detail, ms: Date.now() - started };
+function finish({ region, host, probes, started, status, detail, iamDenied = false }) {
+  return { region, host, probes, status, detail, iamDenied, ms: Date.now() - started };
+}
+
+/** Probes that actually exercise IAM on the project. */
+const PROJECT_SCOPED = ['location', 'customModels', 'generateContent'];
+
+/** Pulls "aiplatform.locations.get" out of a Google permission-denied message. */
+export function deniedPermission(message) {
+  return /Permission '([^']+)' denied/.exec(message || '')?.[1] ?? null;
+}
+
+/** Every distinct permission the project refused, in probe order. */
+export function missingPermissions(probes) {
+  const names = probes
+    .filter((p) => p.status === 403)
+    .map((p) => deniedPermission(p.error))
+    .filter(Boolean);
+  return [...new Set(names)];
+}
+
+/** A 403 that means "turn the API on", not "grant a role". */
+export function isServiceDisabled(probes) {
+  return probes.some((p) => /has not been used in project|SERVICE_DISABLED|is disabled/i.test(p.error || ''));
 }
 
 /** Turns the probe results into one verdict plus a human sentence. */
 export function classify(probes) {
   const by = Object.fromEntries(probes.map((p) => [p.name, p]));
   const anyOk = probes.some((p) => p.ok);
-  const auth = probes.find((p) => p.status === 401);
-  const forbidden = probes.find((p) => p.status === 403);
+  const projectProbes = probes.filter((p) => PROJECT_SCOPED.includes(p.name));
 
-  if (auth) {
+  if (probes.some((p) => p.status === 401)) {
     return { status: 'FAIL', detail: 'HTTP 401 - the credential was rejected (expired or invalid)' };
   }
 
-  if (!anyOk && forbidden) {
+  if (probes.length && probes.every((p) => p.transport)) {
+    return { status: 'FAIL', detail: probes[0]?.error || 'no response from the endpoint' };
+  }
+
+  if (isServiceDisabled(probes)) {
     return {
-      status: 'FAIL',
-      detail: `HTTP 403 - ${forbidden.error || 'no permission; check IAM roles or enable aiplatform.googleapis.com'}`,
+      status: 'PARTIAL',
+      detail: 'the Vertex AI API is not enabled on this project',
+      iamDenied: true,
     };
   }
 
-  if (probes.every((p) => p.transport)) {
-    return { status: 'FAIL', detail: probes[0]?.error || 'no response from the endpoint' };
+  // Inference working is the answer that matters, even if the metadata reads
+  // were denied - those permissions are not needed to use a model.
+  if (by.generateContent?.ok) {
+    const denied = missingPermissions(probes);
+    return {
+      status: 'OK',
+      detail: denied.length
+        ? `inference works; read-only IAM missing (${denied.join(', ')})`
+        : 'all probes passed',
+    };
   }
 
   const failed = probes.filter((p) => !p.ok);
   if (failed.length === 0) {
     return { status: 'OK', detail: 'all probes passed' };
+  }
+
+  const denied = missingPermissions(probes);
+  if (denied.length && projectProbes.every((p) => !p.ok)) {
+    return {
+      status: anyOk ? 'PARTIAL' : 'FAIL',
+      // Project IAM is not per-region, so this verdict holds for every region.
+      detail: `credential valid, but the project denies: ${denied.join(', ')}`,
+      iamDenied: true,
+    };
   }
 
   if (by.location?.ok || by.publisherModels?.ok) {

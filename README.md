@@ -84,12 +84,20 @@ POST https://oauth2.googleapis.com/token
 | 1 | `location` | `GET https://me-west1-aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/me-west1` |
 | 2 | `publisherModels` | `GET https://me-west1-aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=5` |
 | 3 | `customModels` | `GET https://me-west1-aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/me-west1/models?pageSize=1` |
-| 4 | `generateContent` *(רק עם `--generate`)* | `POST https://me-west1-aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/me-west1/publishers/google/models/{MODEL}:generateContent` |
+| 4 | `generateContent` | `POST https://me-west1-aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/me-west1/publishers/google/models/{MODEL}:generateContent` |
 
 כל הכתובות מרוכזות במקום אחד — `src/regions.js`, באובייקט `urls`.
 
-בדיקה 1 מוכיחה שהאנדפוינט הריג'ונלי קיים ושהמפתח מזוהה.
-בדיקה 3 היא זו שמוכיחה הרשאות **על הפרויקט** (IAM), ולא רק שהחתימה תקינה.
+שים לב לחלוקה, כי היא זו שקובעת את הפסק דין:
+
+- **בדיקה 2 היא לא project‑scoped** — אין בכלל `projects/{PROJECT}` בכתובת שלה.
+  אם היא מחזירה `200` זה מוכיח שהטוקן תקף, ולא מוכיח **כלום** לגבי הרשאות בפרויקט.
+- **בדיקות 1, 3 ו‑4 הן project‑scoped**, וכל אחת דורשת הרשאה **אחרת**:
+  `aiplatform.locations.get`, `aiplatform.models.list`, `aiplatform.endpoints.predict`.
+
+לכן מפתח יכול לקבל `403` על 1 ו‑3 ועדיין להריץ מודלים בלי בעיה. בדיקה 4 רצה
+אוטומטית ברגע שהקריאות חוזרות `403`, גם בלי `--generate` — אחרת התשובה הייתה
+נשארת לא‑מוכרעת בדיוק בנקודה שמעניינת אותך. אם היא עוברת, הריג'ן מסומן `OK`.
 
 ### שלב 3 — פסק דין
 
@@ -150,7 +158,7 @@ me-west1  me-west1-aiplatform.googleapis.com  OK      388ms  all probes passed
 | `--regions <a,b,c>` | רשימת הנפילה המלאה, לפי סדר |
 | `--only-preferred` | בלי fallback — לבדוק רק את הריג'ן המועדף |
 | `--all` | לבדוק את כל הריג'נים גם אחרי הצלחה (טוב למיפוי זמינות) |
-| `--generate` | לשלוח גם בקשת `generateContent` אמיתית |
+| `--generate` | לכפות בקשת `generateContent` גם כשהקריאות עברו (רצה אוטומטית על `403`) |
 | `--model <name>` | המודל ל‑`--generate`. ברירת מחדל `gemini-2.5-flash` |
 | `--timeout <ms>` | timeout לכל בקשה. ברירת מחדל 20000 |
 | `--json` | פלט JSON ב‑stdout (הלוג עובר ל‑stderr) |
@@ -207,8 +215,8 @@ me-west1  me-west1-aiplatform.googleapis.com  OK      388ms  all probes passed
 | `invalid_grant: Invalid JWT Signature` | ה‑`private_key` לא תואם ל‑service account — ה‑JSON נערך, או שהמפתח סובב |
 | `redacted placeholder` | ה‑`private_key` בקובץ מקוצץ — צריך את ה‑JSON המקורי |
 | `invalid_grant` עם מפתח תקין | שעון המכונה סוטה ביותר מכמה דקות — ה‑JWT נדחה |
-| `403 ... has not been used in project` | ה‑API לא הופעל בפרויקט |
-| `403 Permission denied` | חסר `roles/aiplatform.user` |
+| `403 ... has not been used in project` | ה‑API לא הופעל בפרויקט (הכלי מזהה ומפריד מהמקרה הבא) |
+| `403 Permission 'aiplatform.locations.get' denied` | ה‑API מופעל, אבל ל‑service account אין תפקיד בפרויקט. הכלי מרכז את שמות ההרשאות החסרות ומדפיס את פקודת ה‑`gcloud` להוספת `roles/aiplatform.user` |
 | `404` על `:generateContent` בלבד | המודל לא זמין בריג'ן הזה |
 | `429` | חריגת מכסה — המפתח עצמו תקין |
 | `HTML error page` | שם הריג'ן לא קיים |

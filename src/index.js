@@ -4,7 +4,7 @@ import { parseArgs, resolveRegionOrder, helpText } from './cli.js';
 import { loadCredentials, describeCredentials, CredentialError } from './credentials.js';
 import { mintAccessToken, AuthError } from './auth.js';
 import { createHttpClient } from './httpClient.js';
-import { checkRegion, checkExpressMode } from './checks.js';
+import { checkRegion, checkExpressMode, missingPermissions } from './checks.js';
 import { c, heading, renderSummary, ICON } from './report.js';
 import { hostForRegion, PREFERRED_REGION } from './regions.js';
 
@@ -122,6 +122,13 @@ async function main() {
       break;
     }
 
+    // IAM and API enablement are project-wide, not per-region, so every other
+    // region would return the identical 403.
+    if (result.iamDenied && !opts.all) {
+      say(c.dim('  (this is a project-level denial, identical in every region - skipping the rest)'));
+      break;
+    }
+
     if (result.status === 'OK' && !opts.all) {
       if (region !== regionOrder[0]) {
         say(
@@ -165,10 +172,30 @@ async function main() {
       );
     }
   } else if (usable) {
-    say(`${c.yellow(ICON.warn)} ${c.bold('The credential is valid but something is missing.')}`);
-    say(`  ${usable.region}: ${usable.detail}`);
-    say(c.dim('  Most common cause: the Vertex AI API is not enabled on the project, or the'));
-    say(c.dim('  service account lacks roles/aiplatform.user. See README "Troubleshooting".'));
+    const denied = missingPermissions(results.flatMap((r) => r.probes));
+    say(`${c.yellow(ICON.warn)} ${c.bold('The key itself is fine - the project is not letting it in.')}`);
+    if (creds.kind === 'service_account') {
+      say('  The token exchange succeeded, so the service account and its private key are valid.');
+    }
+    if (denied.length) {
+      say(`  What ${projectId} refused:`);
+      for (const permission of denied) say(`    ${c.yellow('-')} ${permission}`);
+      say(c.dim('  IAM is project-wide, so this is the same in every region.'));
+      say('');
+      say('  Ask whoever owns the project to grant the service account a role:');
+      say(
+        c.cyan(
+          [
+            `    gcloud projects add-iam-policy-binding ${projectId} \\`,
+            `      --member="serviceAccount:${creds.clientEmail || '<service account email>'}" \\`,
+            '      --role="roles/aiplatform.user"',
+          ].join('\n'),
+        ),
+      );
+    } else {
+      say(`  ${usable.region}: ${usable.detail}`);
+      say(c.dim('  Run with --verbose to see the full response.'));
+    }
   } else {
     say(`${c.red(ICON.fail)} ${c.bold('No region accepted this key.')}`);
     say(c.dim('  Run again with --verbose to see the full request and response.'));

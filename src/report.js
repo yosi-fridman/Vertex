@@ -20,6 +20,10 @@ export function heading(text) {
   return `\n${c.bold(text)}\n${c.dim('-'.repeat(text.length))}`;
 }
 
+function clip(text, max) {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 /** Renders the per-region summary as an aligned table. */
 export function renderSummary(results) {
   const headers = {
@@ -36,7 +40,8 @@ export function renderSummary(results) {
     host: r.host.replace('https://', ''),
     status: r.status,
     ms: r.ms == null ? '' : `${r.ms}ms`,
-    detail: r.detail || '',
+    // The table is read at a glance - the full text stays in --json.
+    detail: clip(r.detail || '', 84),
   }));
 
   const width = {};
