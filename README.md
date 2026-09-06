@@ -15,24 +15,40 @@ https://me-west1-aiplatform.googleapis.com
 
 ---
 
-## התקנה
+## התחלה מהירה
 
 ```bash
 npm install
-cp .env.example .env      # וערוך את .env
 ```
+
+**שים את קובץ ה‑JSON של ה‑service account כאן, בדיוק כפי שגוגל נתנה לך אותו:**
+
+```
+secrets/vertex-sa.json
+```
+
+בלי לערוך אותו, בלי למחוק שדות, עם ה‑`private_key` המלא. ואז:
+
+```bash
+npm run check
+```
+
+זהו. הכלי מוצא את הקובץ לבד, קורא ממנו את ה‑`project_id`, ומתחיל לבדוק מול `me-west1`.
+אין מה להגדיר ב‑`.env` ואין דגלים חובה. התיקייה `secrets/` נמצאת ב‑`.gitignore`,
+כך שהמפתח לא ייכנס לגיט.
+
+אם קראת לקובץ בשם אחר — עדיין יעבוד, כל עוד יש שם קובץ JSON אחד בלבד.
 
 דרישה: Node.js 18 ומעלה.
 
 ## הרצה
 
 ```bash
-# הדרך הרגילה — קובץ ה‑JSON של ה‑service account
-node src/index.js --key ./secrets/vertex-sa.json
+npm run check                                   # אחרי שהנחת את הקובץ ב-secrets/
 
-# או דרך משתנה סביבה
-export GOOGLE_APPLICATION_CREDENTIALS=./secrets/vertex-sa.json
-npm run check
+# חלופות, אם אתה מעדיף לא להניח קובץ בפרויקט
+node src/index.js --key /path/to/key.json
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json && npm run check
 
 # לראות את כל הבקשות והתשובות (מפתחות מוסתרים)
 npm run check:verbose
@@ -140,9 +156,20 @@ me-west1  me-west1-aiplatform.googleapis.com  OK      388ms  all probes passed
 | `--json` | פלט JSON ב‑stdout (הלוג עובר ל‑stderr) |
 | `--verbose` | להדפיס headers ו‑bodies, עם הסתרת סודות |
 
+## סדר איתור המפתח
+
+מהחזק לחלש — הראשון שנמצא מנצח:
+
+1. `--key <file|json>`
+2. `GOOGLE_APPLICATION_CREDENTIALS` — נתיב לקובץ
+3. `GOOGLE_SERVICE_ACCOUNT_JSON` — ה‑JSON עצמו, נוח ב‑CI
+4. `GOOGLE_ACCESS_TOKEN` — טוקן מוכן
+5. `GOOGLE_API_KEY` / `VERTEX_API_KEY`
+6. **`secrets/vertex-sa.json`** — או קובץ ה‑JSON היחיד שנמצא ב‑`secrets/`
+
 ## סוגי מפתחות נתמכים
 
-1. **Service account JSON** — המקרה הרגיל. `GOOGLE_APPLICATION_CREDENTIALS` או `--key`.
+1. **Service account JSON** — המקרה הרגיל. `secrets/vertex-sa.json`, `GOOGLE_APPLICATION_CREDENTIALS` או `--key`.
 2. **JSON inline** — `GOOGLE_SERVICE_ACCOUNT_JSON`, נוח ב‑CI.
 3. **Access token מוכן** — `GOOGLE_ACCESS_TOKEN`, למשל מ‑`gcloud auth print-access-token`.
 4. **API key** (Vertex AI express mode) — `GOOGLE_API_KEY`. נשלח ב‑header `x-goog-api-key`
@@ -177,6 +204,8 @@ me-west1  me-west1-aiplatform.googleapis.com  OK      388ms  all probes passed
 |-----------|---------------|
 | `401` בכל בדיקה | הטוקן פג או שהמפתח בוטל |
 | `invalid_grant: account not found` | ה‑service account נמחק, או שהמפתח שייך לפרויקט אחר |
+| `invalid_grant: Invalid JWT Signature` | ה‑`private_key` לא תואם ל‑service account — ה‑JSON נערך, או שהמפתח סובב |
+| `redacted placeholder` | ה‑`private_key` בקובץ מקוצץ — צריך את ה‑JSON המקורי |
 | `invalid_grant` עם מפתח תקין | שעון המכונה סוטה ביותר מכמה דקות — ה‑JWT נדחה |
 | `403 ... has not been used in project` | ה‑API לא הופעל בפרויקט |
 | `403 Permission denied` | חסר `roles/aiplatform.user` |
@@ -196,6 +225,7 @@ me-west1  me-west1-aiplatform.googleapis.com  OK      388ms  all probes passed
 ## מבנה
 
 ```
+secrets/          כאן שמים את vertex-sa.json (בגיטאיגנור)
 src/
   index.js        זרימה ראשית ופלט
   cli.js          פענוח דגלים וסדר הריג'נים

@@ -81,14 +81,22 @@ export async function mintAccessToken(http, creds) {
 
 function explainTokenFailure(response) {
   const err = response.data?.error;
-  const desc = response.data?.error_description;
+  const desc = response.data?.error_description || '';
   const hints = {
     invalid_grant:
       'the JWT was rejected - usually a revoked/deleted key, a clock skew of more than a few minutes, or a service account that no longer exists',
     invalid_client: 'the client_email in the key file is unknown to Google',
     unauthorized_client: 'the service account is not allowed to request this scope',
   };
-  const hint = hints[err] ? ` (${hints[err]})` : '';
+  // Google's description is precise enough to name the cause outright.
+  const specific = [
+    [/invalid jwt signature/i, 'the private_key does not belong to this service account - the JSON was edited or the key was rotated'],
+    [/account not found/i, 'no such service account - it was deleted, or the JSON is from another project'],
+    [/jwt is expired|too early/i, "this machine's clock is off by more than a few minutes"],
+    [/invalid jwt.*aud|audience/i, 'the token_uri in the JSON does not match what Google expects'],
+  ].find(([pattern]) => pattern.test(desc));
+
+  const hint = specific ? ` (${specific[1]})` : hints[err] ? ` (${hints[err]})` : '';
   return `Token exchange failed with HTTP ${response.status}: ${err || 'unknown_error'}${
     desc ? ` - ${desc}` : ''
   }${hint}`;

@@ -12,3 +12,4 @@ credentials.json
 
 secrets/*
 !secrets/.gitkeep
+!secrets/README.md

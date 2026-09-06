@@ -41,6 +41,15 @@ function fromServiceAccountObject(json, source) {
         'If you pasted it into an env var, make sure the \\n escapes survived.',
     );
   }
+  const body = json.private_key
+    .replace(/-----(BEGIN|END)( RSA)? PRIVATE KEY-----/g, '')
+    .replace(/\s|\\n/g, '');
+  if (body.length < 100) {
+    throw new CredentialError(
+      `The private_key in ${source} is only ${body.length} characters - it is a redacted ` +
+        'placeholder, not a real key. Use the untouched JSON that Google gave you.',
+    );
+  }
   return {
     kind: 'service_account',
     source,
@@ -52,6 +61,10 @@ function fromServiceAccountObject(json, source) {
   };
 }
 
+/** Where a key file is looked for when nothing was configured at all. */
+export const SECRETS_DIR = 'secrets';
+export const DEFAULT_KEY_FILE = 'secrets/vertex-sa.json';
+
 /**
  * Resolution order:
  *   1. --key <file|json>            (explicit wins)
@@ -59,6 +72,11 @@ function fromServiceAccountObject(json, source) {
  *   3. GOOGLE_SERVICE_ACCOUNT_JSON     (the JSON inline, e.g. from a secret store)
  *   4. GOOGLE_ACCESS_TOKEN             (already-minted bearer token)
  *   5. GOOGLE_API_KEY / VERTEX_API_KEY (express-mode API key)
+ *   6. secrets/vertex-sa.json, or the single *.json file in secrets/
+ *
+ * Step 6 is the "just drop the file in the project" path: put the JSON exactly
+ * as Google gave it to you at secrets/vertex-sa.json and run `npm run check`
+ * with no flags and no env vars. secrets/ is gitignored.
  */
 export function loadCredentials({ keyArg, env = process.env } = {}) {
   if (keyArg) {
@@ -105,10 +123,42 @@ export function loadCredentials({ keyArg, env = process.env } = {}) {
     };
   }
 
+  const discovered = discoverKeyFile(env.VERTEX_SECRETS_DIR || SECRETS_DIR);
+  if (discovered) {
+    return fromServiceAccountObject(readJson(discovered), discovered);
+  }
+
   throw new CredentialError(
-    'No credentials found. Set GOOGLE_APPLICATION_CREDENTIALS to your service-account ' +
-      'JSON file (or pass --key <file>). See .env.example.',
+    `No credentials found. Drop your service-account JSON at ${DEFAULT_KEY_FILE} ` +
+      '(exactly as Google gave it to you - that directory is gitignored), or set ' +
+      'GOOGLE_APPLICATION_CREDENTIALS, or pass --key <file>. See .env.example.',
   );
+}
+
+/**
+ * Looks for a key file the user simply dropped into secrets/.
+ * Prefers the documented name; otherwise accepts a single *.json file there,
+ * and refuses to guess when there are several.
+ */
+export function discoverKeyFile(dir) {
+  const preferred = path.resolve(dir, 'vertex-sa.json');
+  if (fs.existsSync(preferred)) return preferred;
+
+  let entries;
+  try {
+    entries = fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith('.json'));
+  } catch {
+    return null;
+  }
+
+  if (entries.length === 0) return null;
+  if (entries.length > 1) {
+    throw new CredentialError(
+      `${dir}/ holds several JSON files (${entries.join(', ')}). ` +
+        `Rename the one you want to vertex-sa.json, or pass --key ${dir}/<file>.json.`,
+    );
+  }
+  return path.resolve(dir, entries[0]);
 }
 
 /** Never log a secret in full – this is what goes on screen. */

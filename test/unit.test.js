@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { urls, hostForRegion, DEFAULT_REGIONS, PREFERRED_REGION } from '../src/regions.js';
 import { parseArgs, resolveRegionOrder } from '../src/cli.js';
 import { buildSignedJwt, CLOUD_PLATFORM_SCOPE, authHeaders } from '../src/auth.js';
 import { classify, extractError } from '../src/checks.js';
-import { loadCredentials, maskSecret } from '../src/credentials.js';
+import { loadCredentials, maskSecret, discoverKeyFile } from '../src/credentials.js';
 import { fullUrl } from '../src/httpClient.js';
 
 test('me-west1 is the preferred region and maps to the Tel Aviv host', () => {
@@ -124,18 +127,83 @@ test('secrets are masked and API keys never appear in a logged URL', () => {
   );
 });
 
-test('loadCredentials recognises each credential shape', () => {
+/** An empty secrets dir, so discovery cannot pick up a real key on this machine. */
+function emptySecretsDir(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vkc-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+const serviceAccountFixture = (privateKey) => ({
+  type: 'service_account',
+  project_id: 'gemini-demo',
+  private_key_id: 'df7f66d5',
+  private_key: privateKey,
+  client_email: 'tester@gemini-demo.iam.gserviceaccount.com',
+  token_uri: 'https://oauth2.googleapis.com/token',
+});
+
+test('loadCredentials recognises each credential shape', (t) => {
+  const VERTEX_SECRETS_DIR = emptySecretsDir(t);
   assert.equal(loadCredentials({ keyArg: 'AIzaSyABCDEFGHIJKLMNOP' }).kind, 'api_key');
   assert.equal(
-    loadCredentials({ env: { GOOGLE_ACCESS_TOKEN: 'ya29.token' } }).kind,
+    loadCredentials({ env: { GOOGLE_ACCESS_TOKEN: 'ya29.token', VERTEX_SECRETS_DIR } }).kind,
     'access_token',
   );
-  assert.throws(() => loadCredentials({ env: {} }), /No credentials found/);
+  assert.throws(() => loadCredentials({ env: { VERTEX_SECRETS_DIR } }), /No credentials found/);
   assert.throws(
     () =>
       loadCredentials({
-        env: { GOOGLE_SERVICE_ACCOUNT_JSON: '{"client_email":"a@b","private_key":"nope"}' },
+        env: {
+          VERTEX_SECRETS_DIR,
+          GOOGLE_SERVICE_ACCOUNT_JSON: '{"client_email":"a@b","private_key":"nope"}',
+        },
       }),
     /does not look like a PEM key/,
+  );
+});
+
+test('a key file dropped into secrets/ is found with no flags and no env vars', (t) => {
+  const VERTEX_SECRETS_DIR = emptySecretsDir(t);
+  const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const pem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+  fs.writeFileSync(
+    path.join(VERTEX_SECRETS_DIR, 'vertex-sa.json'),
+    JSON.stringify(serviceAccountFixture(pem)),
+  );
+
+  const creds = loadCredentials({ env: { VERTEX_SECRETS_DIR } });
+  assert.equal(creds.kind, 'service_account');
+  assert.equal(creds.projectId, 'gemini-demo');
+  assert.equal(creds.clientEmail, 'tester@gemini-demo.iam.gserviceaccount.com');
+});
+
+test('any single *.json in secrets/ works, but several are refused', (t) => {
+  const dir = emptySecretsDir(t);
+  const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const pem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+
+  assert.equal(discoverKeyFile(dir), null);
+
+  fs.writeFileSync(path.join(dir, 'downloaded-key.json'), JSON.stringify(serviceAccountFixture(pem)));
+  assert.equal(loadCredentials({ env: { VERTEX_SECRETS_DIR: dir } }).kind, 'service_account');
+
+  fs.writeFileSync(path.join(dir, 'another.json'), '{}');
+  assert.throws(() => discoverKeyFile(dir), /several JSON files/);
+});
+
+test('a redacted private_key is called out instead of failing later at signing time', (t) => {
+  const VERTEX_SECRETS_DIR = emptySecretsDir(t);
+  assert.throws(
+    () =>
+      loadCredentials({
+        env: {
+          VERTEX_SECRETS_DIR,
+          GOOGLE_SERVICE_ACCOUNT_JSON: JSON.stringify(
+            serviceAccountFixture('-----BEGIN PRIVATE KEY-----\nMIXXXXXX-----END PRIVATE KEY-----\n'),
+          ),
+        },
+      }),
+    /redacted placeholder/,
   );
 });
